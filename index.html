@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>이벤트 트래커</title>
+  <meta name="description" content="은행·증권 이벤트 리워드를 체크리스트로 관리하는 앱">
+  <meta name="theme-color" content="#0b1519">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="이벤트">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-row">
+      <h1 class="app-title">
+        <img src="./icon-192.png" alt="" width="28" height="28" class="app-logo">
+        이벤트 트래커
+      </h1>
+      <div class="header-actions">
+        <button type="button" class="icon-btn" id="menuBtn" aria-label="더보기 메뉴" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <button type="button" class="btn btn-primary btn-add" id="addEventBtn" aria-label="이벤트 추가">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span>이벤트 추가</span>
+        </button>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="이벤트 선택"></nav>
+  </header>
+
+  <main id="main" class="main" tabindex="-1" aria-live="polite"></main>
+
+  <!-- 이벤트 추가/수정 -->
+  <dialog class="sheet" id="eventDialog" aria-labelledby="eventDialogTitle">
+    <form method="dialog" class="sheet-form" id="eventForm" novalidate>
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <h2 class="sheet-title" id="eventDialogTitle">이벤트 추가</h2>
+      <div class="field">
+        <label for="eventName">이름 <span class="req" aria-hidden="true">*</span></label>
+        <input id="eventName" name="name" type="text" required autocomplete="off" placeholder="예: 신한 SOL LINK 계좌개설" aria-describedby="eventNameErr">
+        <p class="field-error" id="eventNameErr" role="alert"></p>
+      </div>
+      <div class="field">
+        <label for="eventSource">소스 링크 <span class="opt">(선택)</span></label>
+        <input id="eventSource" name="sourceUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://" aria-describedby="eventSourceErr">
+        <p class="field-error" id="eventSourceErr" role="alert"></p>
+      </div>
+      <fieldset class="field">
+        <legend>상태</legend>
+        <div class="segmented">
+          <input type="radio" id="statusProgress" name="status" value="in_progress" checked>
+          <label for="statusProgress">진행 중</label>
+          <input type="radio" id="statusDone" name="status" value="done">
+          <label for="statusDone">완료</label>
+        </div>
+      </fieldset>
+      <div class="sheet-actions">
+        <button type="button" class="btn btn-ghost" data-close>취소</button>
+        <button type="submit" class="btn btn-primary" value="save">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 단계 추가/수정 -->
+  <dialog class="sheet" id="stepDialog" aria-labelledby="stepDialogTitle">
+    <form method="dialog" class="sheet-form" id="stepForm" novalidate>
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <h2 class="sheet-title" id="stepDialogTitle">단계 추가</h2>
+      <div class="field">
+        <label for="stepTitle">제목 <span class="req" aria-hidden="true">*</span></label>
+        <input id="stepTitle" name="title" type="text" required autocomplete="off" placeholder="예: 계좌 개설 + 혜택 신청" aria-describedby="stepTitleErr">
+        <p class="field-error" id="stepTitleErr" role="alert"></p>
+      </div>
+      <div class="field">
+        <label for="stepReward">리워드</label>
+        <input id="stepReward" name="reward" type="text" autocomplete="off" placeholder="예: 1만 원, 주식 1주">
+      </div>
+      <div class="field">
+        <label for="stepTiming">시점/마감</label>
+        <input id="stepTiming" name="timing" type="text" autocomplete="off" placeholder="예: 11/30까지, 다음달 10일 지급">
+      </div>
+      <div class="field">
+        <label for="stepMemo">메모 <span class="opt">(선택)</span></label>
+        <textarea id="stepMemo" name="memo" rows="3" placeholder="조건, 주의사항 등"></textarea>
+      </div>
+      <div class="field">
+        <label for="stepUrl">링크 <span class="opt">(선택)</span></label>
+        <input id="stepUrl" name="url" type="url" inputmode="url" autocomplete="off" placeholder="https://" aria-describedby="stepUrlErr">
+        <p class="field-error" id="stepUrlErr" role="alert"></p>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" class="btn btn-ghost" data-close>취소</button>
+        <button type="submit" class="btn btn-primary" value="save">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 액션 시트 (⋯ 메뉴) -->
+  <dialog class="sheet action-sheet" id="actionDialog" aria-labelledby="actionDialogTitle">
+    <div class="sheet-form">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <h2 class="sheet-title sheet-title-sm" id="actionDialogTitle"></h2>
+      <div class="action-list" id="actionList"></div>
+      <button type="button" class="btn btn-ghost btn-block" data-close>닫기</button>
+    </div>
+  </dialog>
+
+  <!-- 확인 -->
+  <dialog class="confirm" id="confirmDialog" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
+    <div class="confirm-body">
+      <h2 class="confirm-title" id="confirmTitle">삭제할까요?</h2>
+      <p class="confirm-msg" id="confirmMsg"></p>
+      <div class="confirm-actions">
+        <button type="button" class="btn btn-ghost" id="confirmCancel">취소</button>
+        <button type="button" class="btn btn-danger" id="confirmOk">삭제</button>
+      </div>
+    </div>
+  </dialog>
+
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
