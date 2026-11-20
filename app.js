@@ -3,10 +3,11 @@
   "use strict";
 
   const STORAGE_KEY = "event-tracker:v1";
-  const DATA_VERSION = 1;
+  const CORRUPT_KEY_PREFIX = STORAGE_KEY + ":corrupt-";
+  const DATA_VERSION = 2;
   const ALL = "all";
+  const STATUS_LABEL = { in_progress: "진행 중", done: "완료" };
 
-  /* ---------- Utilities ---------- */
   const $ = (sel, root = document) => root.querySelector(sel);
 
   function uid() {
@@ -55,28 +56,25 @@
     }
   }
 
-  /**
-   * Parse a Korean won amount like "1만 원", "3천 원", "10,000원", "1.2만원", "1만 2천 원".
-   * Returns a number, or null if the reward is not a single plain amount.
-   */
+  function parseBelowTenThousand(part) {
+    const m = part.match(/^(?:(\d+(?:\.\d+)?)천)?(\d+(?:\.\d+)?)?$/);
+    if (!m || !(m[1] || m[2])) return null;
+    return parseFloat(m[1] || 0) * 1e3 + parseFloat(m[2] || 0);
+  }
+
   function parseWon(text) {
-    const s = String(text || "").replace(/[\s,]/g, "");
-    if (!s) return null;
-    const m = s.match(/^(?:(\d+(?:\.\d+)?)억)?(?:(\d+(?:\.\d+)?)만)?(?:(\d+(?:\.\d+)?)천)?(\d+)?원$/);
-    if (!m || !(m[1] || m[2] || m[3] || m[4])) return null;
-    const n =
-      (parseFloat(m[1] || 0) * 1e8) +
-      (parseFloat(m[2] || 0) * 1e4) +
-      (parseFloat(m[3] || 0) * 1e3) +
-      (parseInt(m[4] || 0, 10));
-    return Math.round(n);
+    const s = String(text || "").replace(/[\s,]/g, "").replace(/^₩/, "").replace(/원$/, "");
+    const m = s.match(/^(?:([^억만]+)억)?(?:([^억만]+)만)?([^억만]*)$/);
+    if (!m || !(m[1] || m[2] || m[3])) return null;
+    const [eok, man, rest] = [m[1], m[2], m[3]].map((part) => (part ? parseBelowTenThousand(part) : 0));
+    if (eok == null || man == null || rest == null) return null;
+    return Math.round(eok * 1e8 + man * 1e4 + rest);
   }
 
   function formatWon(n) {
     return n.toLocaleString("ko-KR") + "원";
   }
 
-  /* ---------- Seed data ---------- */
   function step(title, reward, timing, memo, url, done) {
     return { id: uid(), title, reward, timing, memo, url, done: !!done };
   }
@@ -84,13 +82,12 @@
   function seedState() {
     return {
       version: DATA_VERSION,
-      selectedId: ALL,
       events: [
         {
           id: uid(),
           name: "신한 SOL LINK 계좌개설",
           sourceUrl: "https://m.blog.naver.com/ica2710/224474865018",
-          status: "in_progress",
+          manualStatus: null,
           steps: [
             step(
               "SOL LINK 계좌 개설 + 1만원 혜택 신청",
@@ -155,73 +152,107 @@
           id: uid(),
           name: "KB증권 마이데이터",
           sourceUrl: "",
-          status: "done",
+          manualStatus: null,
           steps: [step("마이데이터 이벤트 참여", "", "", "", "", true)],
         },
         {
           id: uid(),
           name: "하나증권 국내주식 매수쿠폰",
           sourceUrl: "",
-          status: "done",
+          manualStatus: null,
           steps: [step("매수 체결", "쿠폰 금액", "영업일 1일 이내 예수금 입금", "", "", true)],
         },
       ],
     };
   }
 
-  /* ---------- Persistence ---------- */
   function str(v) {
     return typeof v === "string" ? v : v == null ? "" : String(v);
+  }
+
+  function stepStatus(ev) {
+    return ev.steps.length && ev.steps.every((s) => s.done) ? "done" : "in_progress";
+  }
+
+  function statusOf(ev) {
+    return ev.manualStatus || stepStatus(ev);
+  }
+
+  function setManualStatus(ev, status) {
+    ev.manualStatus = status !== stepStatus(ev) ? status : null;
+  }
+
+  function changeSteps(ev, steps) {
+    ev.steps = steps;
+    ev.manualStatus = null;
   }
 
   function normalizeState(raw) {
     if (!raw || typeof raw !== "object" || !Array.isArray(raw.events)) return null;
     const events = raw.events
       .filter((e) => e && typeof e === "object")
-      .map((e) => ({
-        id: str(e.id) || uid(),
-        name: str(e.name).trim() || "이름 없는 이벤트",
-        sourceUrl: str(e.sourceUrl),
-        status: e.status === "done" ? "done" : "in_progress",
-        steps: (Array.isArray(e.steps) ? e.steps : [])
-          .filter((s) => s && typeof s === "object")
-          .map((s) => ({
-            id: str(s.id) || uid(),
-            title: str(s.title).trim() || "제목 없음",
-            reward: str(s.reward),
-            timing: str(s.timing),
-            memo: str(s.memo),
-            url: str(s.url),
-            done: !!s.done,
-          })),
-      }));
-    const selectedId = events.some((e) => e.id === raw.selectedId) ? raw.selectedId : ALL;
-    return { version: DATA_VERSION, selectedId, events };
+      .map((e) => {
+        const ev = {
+          id: str(e.id) || uid(),
+          name: str(e.name).trim() || "이름 없는 이벤트",
+          sourceUrl: str(e.sourceUrl),
+          manualStatus: null,
+          steps: (Array.isArray(e.steps) ? e.steps : [])
+            .filter((s) => s && typeof s === "object")
+            .map((s) => ({
+              id: str(s.id) || uid(),
+              title: str(s.title).trim() || "제목 없음",
+              reward: str(s.reward),
+              timing: str(s.timing),
+              memo: str(s.memo),
+              url: str(s.url),
+              done: !!s.done,
+            })),
+        };
+        const savedStatus = "manualStatus" in e ? e.manualStatus : e.status;
+        if (savedStatus === "done" || savedStatus === "in_progress") setManualStatus(ev, savedStatus);
+        return ev;
+      });
+    return { version: DATA_VERSION, events };
+  }
+
+  function parseState(json) {
+    try {
+      return normalizeState(JSON.parse(json));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function backUpCorrupt(saved) {
+    const existing = Object.keys(localStorage).find(
+      (key) => key.startsWith(CORRUPT_KEY_PREFIX) && localStorage.getItem(key) === saved
+    );
+    if (existing) return existing;
+    const key = CORRUPT_KEY_PREFIX + Date.now();
+    try {
+      localStorage.setItem(key, saved);
+      return key;
+    } catch (e) {
+      return null;
+    }
   }
 
   function load() {
-    let saved = null;
+    let saved;
     try {
       saved = localStorage.getItem(STORAGE_KEY);
     } catch (e) {
-      saved = null;
+      return { state: { version: DATA_VERSION, events: [] }, problem: { kind: "unavailable" } };
     }
-    if (saved != null) {
-      try {
-        const parsed = normalizeState(JSON.parse(saved));
-        if (parsed) return parsed;
-      } catch (e) {
-        /* fall through: corrupted data is kept aside below */
-      }
-      try {
-        localStorage.setItem(STORAGE_KEY + ":corrupt-" + Date.now(), saved);
-      } catch (e) {
-        /* ignore */
-      }
+    if (saved == null) {
+      const seeded = seedState();
+      persist(seeded);
+      return { state: seeded, problem: null };
     }
-    const seeded = seedState();
-    persist(seeded);
-    return seeded;
+    const parsed = parseState(saved);
+    if (parsed) return { state: parsed, problem: null };
+    return { state: { version: DATA_VERSION, events: [] }, problem: { kind: "corrupt", backupKey: backUpCorrupt(saved) } };
   }
 
   let saveFailedNotified = false;
@@ -237,16 +268,24 @@
     }
   }
 
-  let state = load();
+  const loaded = load();
+  let state = loaded.state;
 
   function commit() {
     persist(state);
     render();
   }
 
-  /* ---------- Derived data ---------- */
   function getEvent(id) {
     return state.events.find((e) => e.id === id) || null;
+  }
+
+  function hashFor(id) {
+    return id === ALL ? "" : "#" + encodeURIComponent(id);
+  }
+
+  function selectedEvent() {
+    return state.events.find((e) => hashFor(e.id) === location.hash) || null;
   }
 
   function summarize(ev) {
@@ -271,15 +310,6 @@
     return { total, done, earned, possible, numericCount, others };
   }
 
-  /** Auto status rule: all steps done → 완료; a step unchecked while 완료 → 진행 중. */
-  function applyAutoStatus(ev) {
-    if (!ev.steps.length) return;
-    const allDone = ev.steps.every((s) => s.done);
-    if (allDone) ev.status = "done";
-    else if (ev.status === "done") ev.status = "in_progress";
-  }
-
-  /* ---------- Rendering ---------- */
   const tabsEl = $("#tabs");
   const mainEl = $("#main");
 
@@ -301,9 +331,7 @@
   };
 
   function statusBadge(status) {
-    return status === "done"
-      ? '<span class="badge badge-done">완료</span>'
-      : '<span class="badge badge-progress">진행 중</span>';
+    return `<span class="badge ${status === "done" ? "badge-done" : "badge-progress"}">${STATUS_LABEL[status]}</span>`;
   }
 
   function progressHtml(sum) {
@@ -352,10 +380,13 @@
   }
 
   function renderTabs() {
-    const items = [{ id: ALL, name: "전체", status: null }].concat(state.events);
+    const current = selectedEvent();
+    const items = [{ id: ALL, name: "전체", status: null }].concat(
+      state.events.map((ev) => ({ id: ev.id, name: ev.name, status: statusOf(ev) }))
+    );
     tabsEl.innerHTML = items
       .map((ev) => {
-        const selected = state.selectedId === ev.id;
+        const selected = (current ? current.id : ALL) === ev.id;
         const dot = ev.status ? `<span class="tab-dot${ev.status === "done" ? " is-done" : ""}" aria-hidden="true"></span>` : "";
         return `<button type="button" class="tab" role="tab" aria-selected="${selected}" data-select="${esc(ev.id)}" data-focus="tab:${esc(ev.id)}" tabindex="${selected ? 0 : -1}">${dot}<span class="tab-label">${esc(ev.name)}</span></button>`;
       })
@@ -387,15 +418,16 @@
     const cards = state.events
       .map((ev) => {
         const sum = summarize(ev);
+        const status = statusOf(ev);
         earned += sum.earned;
         possible += sum.possible;
-        if (ev.status === "done") finished++;
+        if (status === "done") finished++;
         else active++;
         return `
-          <button type="button" class="event-card${ev.status === "done" ? " is-done" : ""}" data-select="${esc(ev.id)}" data-focus="card:${esc(ev.id)}" aria-label="${esc(ev.name)}, ${ev.status === "done" ? "완료" : "진행 중"}, ${sum.done}/${sum.total} 단계 완료. 자세히 보기">
+          <button type="button" class="event-card${status === "done" ? " is-done" : ""}" data-select="${esc(ev.id)}" data-focus="card:${esc(ev.id)}" aria-label="${esc(ev.name)}, ${STATUS_LABEL[status]}, ${sum.done}/${sum.total} 단계 완료. 자세히 보기">
             <div class="card-top">
               <h3 class="card-name">${esc(ev.name)}</h3>
-              ${statusBadge(ev.status)}
+              ${statusBadge(status)}
             </div>
             ${progressHtml(sum)}
             ${rewardHtml(sum, 4)}
@@ -442,6 +474,7 @@
 
   function renderDetail(ev) {
     const sum = summarize(ev);
+    const status = statusOf(ev);
     const src = safeHref(ev.sourceUrl);
     const steps = ev.steps.length
       ? `<ol class="step-list">${ev.steps.map((s, i) => renderStep(ev, s, i)).join("")}</ol>`
@@ -450,7 +483,7 @@
     return `
       <section class="detail-head" aria-labelledby="detailName">
         <div class="detail-top">
-          ${statusBadge(ev.status)}
+          ${statusBadge(status)}
           <button type="button" class="btn btn-ghost btn-sm" data-action="edit-event" data-focus="edit-event">${ICONS.edit}<span>수정</span></button>
         </div>
         <h2 class="detail-name" id="detailName">${esc(ev.name)}</h2>
@@ -458,9 +491,9 @@
         ${rewardHtml(sum)}
         <div class="detail-links">
           <div class="segmented status-toggle" role="radiogroup" aria-label="상태" style="flex:1;min-width:200px">
-            <input type="radio" id="dStatusP" name="dStatus" value="in_progress" data-status ${ev.status !== "done" ? "checked" : ""} data-focus="status:p">
+            <input type="radio" id="dStatusP" name="dStatus" value="in_progress" data-status ${status === "in_progress" ? "checked" : ""} data-focus="status:p">
             <label for="dStatusP">진행 중</label>
-            <input type="radio" id="dStatusD" name="dStatus" value="done" data-status ${ev.status === "done" ? "checked" : ""} data-focus="status:d">
+            <input type="radio" id="dStatusD" name="dStatus" value="done" data-status ${status === "done" ? "checked" : ""} data-focus="status:d">
             <label for="dStatusD">완료</label>
           </div>
           ${src ? `<a class="btn btn-outline" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원문 링크 ${ICONS.external}</a>` : ""}
@@ -483,9 +516,8 @@
   function render() {
     const focusKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.focus : null;
 
-    if (state.selectedId !== ALL && !getEvent(state.selectedId)) state.selectedId = ALL;
     renderTabs();
-    const ev = state.selectedId === ALL ? null : getEvent(state.selectedId);
+    const ev = selectedEvent();
     mainEl.innerHTML = ev ? renderDetail(ev) : renderOverview();
     document.title = ev ? `${ev.name} · 이벤트 트래커` : "이벤트 트래커";
 
@@ -495,20 +527,10 @@
     }
   }
 
-  /* ---------- Navigation ---------- */
-  function select(id, opts) {
-    const options = opts || {};
-    if (id !== ALL && !getEvent(id)) id = ALL;
-    const changed = state.selectedId !== id;
-    state.selectedId = id;
-    persist(state);
-    if (changed && !options.fromHistory) {
-      try {
-        history.pushState({ sel: id }, "");
-      } catch (e) {
-        /* ignore */
-      }
-    }
+  function select(id, options = {}) {
+    const hash = hashFor(id);
+    const changed = location.hash !== hash;
+    if (changed) history.pushState(null, "", hash || location.pathname + location.search);
     render();
     if (changed) {
       window.scrollTo(0, 0);
@@ -516,9 +538,9 @@
     }
   }
 
-  window.addEventListener("popstate", (e) => {
-    const sel = e.state && e.state.sel ? e.state.sel : ALL;
-    select(sel, { fromHistory: true });
+  window.addEventListener("hashchange", () => {
+    render();
+    window.scrollTo(0, 0);
   });
 
   /* ---------- Dialog helpers ---------- */
@@ -555,6 +577,25 @@
     errEl.textContent = message || "";
     if (field) field.classList.toggle("has-error", !!message);
     input.setAttribute("aria-invalid", message ? "true" : "false");
+  }
+
+  function validateTitleAndUrl(titleInput, titleErr, titleMessage, urlInput, urlErr) {
+    const title = titleInput.value.trim();
+    const url = normalizeUrl(urlInput.value);
+    setFieldError(titleInput, titleErr, title ? "" : titleMessage);
+    setFieldError(urlInput, urlErr, url.ok ? "" : "올바른 링크(https://…)를 입력해 주세요.");
+    const firstInvalid = !title ? titleInput : !url.ok ? urlInput : null;
+    if (firstInvalid) {
+      firstInvalid.focus();
+      return null;
+    }
+    return { title, url: url.value };
+  }
+
+  function clearRequiredErrorOnInput(input, errEl) {
+    input.addEventListener("input", () => {
+      if (input.value.trim()) setFieldError(input, errEl, "");
+    });
   }
 
   /* ---------- Confirm ---------- */
@@ -595,7 +636,6 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2200);
   }
 
-  /* ---------- Event form ---------- */
   const eventDialog = $("#eventDialog");
   const eventForm = $("#eventForm");
   let editingEventId = null;
@@ -606,7 +646,7 @@
     eventForm.reset();
     eventForm.elements.name.value = ev ? ev.name : "";
     eventForm.elements.sourceUrl.value = ev ? ev.sourceUrl : "";
-    eventForm.elements.status.value = ev ? ev.status : "in_progress";
+    eventForm.elements.status.value = ev ? statusOf(ev) : "in_progress";
     setFieldError(eventForm.elements.name, $("#eventNameErr"), "");
     setFieldError(eventForm.elements.sourceUrl, $("#eventSourceErr"), "");
     openDialog(eventDialog);
@@ -615,49 +655,42 @@
 
   eventForm.addEventListener("submit", (e) => {
     e.preventDefault();
-    const nameInput = eventForm.elements.name;
-    const urlInput = eventForm.elements.sourceUrl;
-    const name = nameInput.value.trim();
-    const url = normalizeUrl(urlInput.value);
-    let firstInvalid = null;
-
-    setFieldError(nameInput, $("#eventNameErr"), name ? "" : "이름을 입력해 주세요.");
-    if (!name) firstInvalid = nameInput;
-    setFieldError(urlInput, $("#eventSourceErr"), url.ok ? "" : "올바른 링크(https://…)를 입력해 주세요.");
-    if (!url.ok && !firstInvalid) firstInvalid = urlInput;
-    if (firstInvalid) {
-      firstInvalid.focus();
-      return;
-    }
+    const fields = validateTitleAndUrl(
+      eventForm.elements.name,
+      $("#eventNameErr"),
+      "이름을 입력해 주세요.",
+      eventForm.elements.sourceUrl,
+      $("#eventSourceErr")
+    );
+    if (!fields) return;
 
     const status = eventForm.elements.status.value === "done" ? "done" : "in_progress";
     if (editingEventId) {
       const ev = getEvent(editingEventId);
       if (ev) {
-        ev.name = name;
-        ev.sourceUrl = url.value;
-        ev.status = status;
+        ev.name = fields.title;
+        ev.sourceUrl = fields.url;
+        setManualStatus(ev, status);
       }
       closeDialog(eventDialog);
       commit();
       toast("이벤트를 수정했어요");
     } else {
-      const ev = { id: uid(), name, sourceUrl: url.value, status, steps: [] };
+      const ev = { id: uid(), name: fields.title, sourceUrl: fields.url, manualStatus: null, steps: [] };
+      setManualStatus(ev, status);
       state.events.push(ev);
+      persist(state);
       closeDialog(eventDialog);
       select(ev.id);
       toast("이벤트를 추가했어요");
     }
   });
 
-  eventForm.elements.name.addEventListener("input", () => {
-    if (eventForm.elements.name.value.trim()) setFieldError(eventForm.elements.name, $("#eventNameErr"), "");
-  });
+  clearRequiredErrorOnInput(eventForm.elements.name, $("#eventNameErr"));
 
-  /* ---------- Step form ---------- */
   const stepDialog = $("#stepDialog");
   const stepForm = $("#stepForm");
-  let editingStep = null; // { eventId, stepId|null }
+  let editingStep = null;
 
   function openStepForm(ev, s) {
     editingStep = { eventId: ev.id, stepId: s ? s.id : null };
@@ -679,18 +712,8 @@
     e.preventDefault();
     if (!editingStep) return;
     const f = stepForm.elements;
-    const title = f.title.value.trim();
-    const url = normalizeUrl(f.url.value);
-    let firstInvalid = null;
-
-    setFieldError(f.title, $("#stepTitleErr"), title ? "" : "제목을 입력해 주세요.");
-    if (!title) firstInvalid = f.title;
-    setFieldError(f.url, $("#stepUrlErr"), url.ok ? "" : "올바른 링크(https://…)를 입력해 주세요.");
-    if (!url.ok && !firstInvalid) firstInvalid = f.url;
-    if (firstInvalid) {
-      firstInvalid.focus();
-      return;
-    }
+    const fields = validateTitleAndUrl(f.title, $("#stepTitleErr"), "제목을 입력해 주세요.", f.url, $("#stepUrlErr"));
+    if (!fields) return;
 
     const ev = getEvent(editingStep.eventId);
     if (!ev) {
@@ -698,29 +721,25 @@
       return;
     }
     const data = {
-      title,
+      title: fields.title,
       reward: f.reward.value.trim(),
       timing: f.timing.value.trim(),
       memo: f.memo.value.trim(),
-      url: url.value,
+      url: fields.url,
     };
     if (editingStep.stepId) {
       const s = ev.steps.find((x) => x.id === editingStep.stepId);
       if (s) Object.assign(s, data);
       toast("단계를 수정했어요");
     } else {
-      ev.steps.push(Object.assign({ id: uid(), done: false }, data));
-      // A new unchecked step means the event is no longer fully done.
-      applyAutoStatus(ev);
+      changeSteps(ev, ev.steps.concat(Object.assign({ id: uid(), done: false }, data)));
       toast("단계를 추가했어요");
     }
     closeDialog(stepDialog);
     commit();
   });
 
-  stepForm.elements.title.addEventListener("input", () => {
-    if (stepForm.elements.title.value.trim()) setFieldError(stepForm.elements.title, $("#stepTitleErr"), "");
-  });
+  clearRequiredErrorOnInput(stepForm.elements.title, $("#stepTitleErr"));
 
   /* ---------- Action sheet ---------- */
   const actionDialog = $("#actionDialog");
@@ -764,8 +783,7 @@
         run: async () => {
           const ok = await confirmAction("단계를 삭제할까요?", `"${s.title}"\n삭제하면 되돌릴 수 없어요.`);
           if (!ok) return;
-          ev.steps = ev.steps.filter((x) => x.id !== s.id);
-          applyAutoStatus(ev);
+          changeSteps(ev, ev.steps.filter((x) => x.id !== s.id));
           commit();
           toast("단계를 삭제했어요");
         },
@@ -781,7 +799,6 @@
     commit();
   }
 
-  /* ---------- Backup ---------- */
   function exportBackup() {
     const json = JSON.stringify(state, null, 2);
     const d = new Date();
@@ -815,12 +832,7 @@
     const file = importInput.files && importInput.files[0];
     importInput.value = "";
     if (!file) return;
-    let next = null;
-    try {
-      next = normalizeState(JSON.parse(await file.text()));
-    } catch (e) {
-      next = null;
-    }
+    const next = parseState(await file.text());
     if (!next) {
       toast("백업 파일을 읽을 수 없어요");
       return;
@@ -832,12 +844,11 @@
     );
     if (!ok) return;
     state = next;
-    state.selectedId = ALL;
-    commit();
+    persist(state);
+    select(ALL);
     toast("백업을 불러왔어요");
   });
 
-  /* ---------- Global event delegation ---------- */
   $("#addEventBtn").addEventListener("click", () => openEventForm(null));
 
   $("#menuBtn").addEventListener("click", () => {
@@ -869,7 +880,7 @@
 
     const actionBtn = e.target.closest("[data-action]");
     if (actionBtn) {
-      const ev = getEvent(state.selectedId);
+      const ev = selectedEvent();
       switch (actionBtn.dataset.action) {
         case "add-event":
           openEventForm(null);
@@ -889,6 +900,7 @@
             )
           ) {
             state.events = state.events.filter((x) => x.id !== ev.id);
+            persist(state);
             select(ALL);
             toast("이벤트를 삭제했어요");
           }
@@ -899,63 +911,69 @@
 
     const menuBtn = e.target.closest("[data-step-menu]");
     if (menuBtn) {
-      const ev = getEvent(state.selectedId);
+      const ev = selectedEvent();
       if (ev) openStepMenu(ev, menuBtn.dataset.stepMenu);
     }
   });
 
   mainEl.addEventListener("change", (e) => {
-    const ev = getEvent(state.selectedId);
+    const ev = selectedEvent();
     if (!ev) return;
 
     const toggle = e.target.closest("[data-toggle]");
     if (toggle) {
-      const s = ev.steps.find((x) => x.id === toggle.dataset.toggle);
-      if (!s) return;
-      const before = ev.status;
-      s.done = toggle.checked;
-      applyAutoStatus(ev);
+      const before = statusOf(ev);
+      changeSteps(
+        ev,
+        ev.steps.map((s) => (s.id === toggle.dataset.toggle ? Object.assign({}, s, { done: toggle.checked }) : s))
+      );
       commit();
-      if (before !== ev.status) toast(ev.status === "done" ? "모든 단계 완료! 🎉" : "진행 중으로 변경했어요");
+      const after = statusOf(ev);
+      if (before !== after) toast(after === "done" ? "모든 단계 완료! 🎉" : "진행 중으로 변경했어요");
       return;
     }
 
     if (e.target.matches("[data-status]")) {
-      ev.status = e.target.value === "done" ? "done" : "in_progress";
+      setManualStatus(ev, e.target.value === "done" ? "done" : "in_progress");
       commit();
     }
   });
 
-  /* ---------- Boot ---------- */
-  try {
-    history.replaceState({ sel: state.selectedId }, "");
-  } catch (e) {
-    /* ignore */
+  async function reportLoadProblem(problem) {
+    if (problem.kind === "unavailable") {
+      toast("저장 공간을 읽지 못했어요. 이번 변경은 저장되지 않을 수 있어요");
+      return;
+    }
+    const where = problem.backupKey
+      ? `원래 데이터는 "${problem.backupKey}" 키에 그대로 보관했어요.`
+      : "원래 데이터를 따로 보관하지 못했어요. 새로 저장하기 전까지는 원래 자리에 남아 있어요.";
+    const restore = await confirmAction(
+      "저장된 데이터를 읽지 못했어요",
+      `${where}\n예시 데이터로 덮어쓰지 않았어요. 백업 파일이 있으면 불러와 주세요.`,
+      "백업 가져오기"
+    );
+    if (restore) importInput.click();
   }
-  render();
 
-  // Keep multiple open tabs/windows in sync
+  render();
+  if (loaded.problem) reportLoadProblem(loaded.problem);
+
   window.addEventListener("storage", (e) => {
     if (e.key !== STORAGE_KEY || !e.newValue) return;
-    try {
-      const next = normalizeState(JSON.parse(e.newValue));
-      if (next) {
-        next.selectedId = state.selectedId;
-        state = next;
-        render();
-      }
-    } catch (err) {
-      /* ignore */
+    const next = parseState(e.newValue);
+    if (!next) {
+      toast("다른 창에서 저장한 데이터를 읽지 못했어요");
+      return;
     }
+    state = next;
+    render();
   });
 
-  /* ---------- Service worker ---------- */
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
       const hadController = !!navigator.serviceWorker.controller;
       let reloaded = false;
       navigator.serviceWorker.addEventListener("controllerchange", () => {
-        // Reload once when an updated worker takes over (not on first install).
         if (!hadController || reloaded) return;
         reloaded = true;
         window.location.reload();

@@ -1,6 +1,4 @@
-/* 이벤트 트래커 service worker — bump CACHE_VERSION whenever app files change. */
-const CACHE_VERSION = "v1";
-const CACHE_NAME = "event-tracker-" + CACHE_VERSION;
+const CACHE_NAME = "event-tracker";
 
 const APP_SHELL = [
   "./",
@@ -29,7 +27,7 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith("event-tracker-") && key !== CACHE_NAME)
+            .filter((key) => key.startsWith("event-tracker-"))
             .map((key) => caches.delete(key))
         )
       )
@@ -37,32 +35,24 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+async function networkFirst(url) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(url, { cache: "no-cache" });
+    if (response.ok) await cache.put(url, response.clone());
+    return response;
+  } catch (error) {
+    const cached = await cache.match(url, { ignoreSearch: true });
+    if (cached) return cached;
+    throw error;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
+  if (new URL(request.url).origin !== self.location.origin) return;
 
-  const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return; // external links: let the network handle them
-
-  // Page navigations: serve the cached app shell (works offline), fall back to network.
-  if (request.mode === "navigate") {
-    event.respondWith(
-      caches.match("./index.html").then((cached) => cached || fetch(request))
-    );
-    return;
-  }
-
-  // Static assets: cache-first, then network (and store same-origin successes).
-  event.respondWith(
-    caches.match(request, { ignoreSearch: true }).then((cached) => {
-      if (cached) return cached;
-      return fetch(request).then((response) => {
-        if (response && response.ok && response.type === "basic") {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return response;
-      });
-    })
-  );
+  const url = request.mode === "navigate" ? new URL("./", self.location).href : request.url;
+  event.respondWith(networkFirst(url));
 });

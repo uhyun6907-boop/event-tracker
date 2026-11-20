@@ -12,6 +12,8 @@ A mobile-first PWA for tracking bank/securities promotion events as step-by-step
 
 모든 데이터는 기기 브라우저의 **localStorage**(`event-tracker:v1` 키)에만 저장되고 서버로 전송되지 않습니다.
 처음 실행하면 예시 이벤트 3개가 들어가며, 이후에는 저장된 데이터를 덮어쓰지 않습니다.
+저장된 데이터를 읽을 수 없으면 원본을 `event-tracker:v1:corrupt-<시각>` 키에 보관하고 안내를 띄웁니다(예시 데이터로 바꾸지 않습니다).
+선택한 이벤트는 주소의 `#<이벤트 id>`로만 기억합니다.
 앱을 지우거나 사이트 데이터를 삭제하면 기록도 사라지므로, 상단 **⋯ 메뉴 → 백업 내보내기 / 가져오기**(JSON)로 백업해 두세요.
 
 All data stays in `localStorage` on your device; nothing is sent anywhere. Use **⋯ → 백업 내보내기 / 가져오기** to export or import a JSON backup.
@@ -39,10 +41,10 @@ python3 -m http.server 8000   # http://localhost:8000
 | `index.html` | 앱 셸, 다이얼로그 |
 | `styles.css` | 스타일 (다크 테마, safe-area 대응) |
 | `app.js` | 상태 관리, 렌더링, localStorage |
-| `sw.js` | 서비스 워커 (앱 셸 프리캐시, cache-first) |
+| `sw.js` | 서비스 워커 (앱 셸 프리캐시, network-first + 오프라인 캐시) |
 | `manifest.json` | 웹 앱 매니페스트 |
 
-**배포 시 주의:** 앱 파일을 수정하면 `sw.js`의 `CACHE_VERSION`(예: `v1` → `v2`)을 올려야 설치된 앱이 새 버전을 받습니다.
-When you change any app file, bump `CACHE_VERSION` in `sw.js` so installed copies pick up the update.
+서비스 워커는 **network-first**입니다. 온라인이면 매번 서버에 재검증(`cache: "no-cache"`)해서 최신 파일을 쓰고, 받은 응답을 캐시에 넣어 둡니다. 오프라인일 때만 캐시를 씁니다. 그래서 앱 파일을 고친 뒤 버전 상수를 올릴 필요가 없습니다.
+The service worker is network-first: online loads always revalidate with the server, and the cache is only an offline fallback. No version constant to bump.
 
 모든 경로가 상대 경로(`./`)라서 GitHub Pages 하위 경로(`/event-tracker/`)에서도 그대로 동작합니다.
